@@ -1,12 +1,12 @@
 #include <graphics/swapchain.hpp>
+
 #include <graphics/device.hpp>
+#include <log.hpp>
 
 #include <cstdint>
-#include <iostream>
 #include <limits>
 #include <algorithm>
 #include <vector>
-#include <vulkan/vulkan_core.h>
 
 namespace niqqa
 {
@@ -39,18 +39,58 @@ SwapchainSupportDetails query_swapchain_support(VkPhysicalDevice device, VkSurfa
     return details;
 }
 
-bool SwapChain::create(VkPhysicalDevice gpu,
-                VkDevice device, 
-                VkSurfaceKHR surface,
-                VkExtent2D actual_extent,
-                VkFormat user_defined_format,
-                VkPresentModeKHR user_defined_present_mode) noexcept
+static uint32_t find_memory_type(VkPhysicalDevice gpu, uint32_t type_filter, VkMemoryPropertyFlags property_flags)
 {
-    m_device = device;
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(gpu, &memory_properties);
+
+    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i)
+    {
+        if ((type_filter & (1 << i)) && (memory_properties.memoryTypes[i].propertyFlags & property_flags) == property_flags)
+        {
+            return i;
+        }
+    }
+
+    return UINT32_MAX;
+}
+
+static VkImageView create_image_view(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspect_flags) noexcept
+{
+    VkImageViewCreateInfo image_view_info{};
+    image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    image_view_info.image = image;
+    image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    image_view_info.format = format;
+
+    image_view_info.subresourceRange.aspectMask = aspect_flags;
+    image_view_info.subresourceRange.baseMipLevel = 0;
+    image_view_info.subresourceRange.levelCount = 1;
+    image_view_info.subresourceRange.baseArrayLayer = 0;
+    image_view_info.subresourceRange.layerCount = 1;
+
+    VkImageView image_view = VK_NULL_HANDLE;
+
+    if (vkCreateImageView(device, &image_view_info, nullptr, &image_view) != VK_SUCCESS)
+    {
+        return VK_NULL_HANDLE;
+    }
+
+    return image_view;
+}
+
+bool Swapchain::create(Device &device, 
+                       VkSurfaceKHR surface,
+                       VkExtent2D actual_extent,
+                       VkFormat user_defined_format,
+                       VkPresentModeKHR user_defined_present_mode,
+                       VkRenderPass render_pass) noexcept
+{
+    m_device = device.device();
     m_surface = surface;
 
-    SwapchainSupportDetails swap_chain_support = query_swapchain_support(gpu, m_surface);
-    QueueFamilyIndices indices = find_queue_families(gpu, m_surface);
+    SwapchainSupportDetails swap_chain_support = query_swapchain_support(device.gpu(), m_surface);
+    QueueFamilyIndices indices = find_queue_families(device.gpu(), m_surface);
     uint32_t queue_family_indices[] = {
         indices.graphics_family.value(),
         indices.present_family.value()
@@ -76,7 +116,7 @@ bool SwapChain::create(VkPhysicalDevice gpu,
     create_info.imageColorSpace = surface_format.colorSpace;
     create_info.imageExtent = actual_extent;
     create_info.imageArrayLayers = 1;
-    create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     if (indices.graphics_family != indices.present_family)
     {
@@ -97,20 +137,27 @@ bool SwapChain::create(VkPhysicalDevice gpu,
     create_info.clipped = VK_TRUE;
     create_info.oldSwapchain = VK_NULL_HANDLE;
 
+    LOG_INFO("Swapchain", "Creating swapchain");
+
     if (vkCreateSwapchainKHR(m_device, &create_info, nullptr, &m_swapchain) != VK_SUCCESS)
     {
-        std::cerr << "Failed to create swap chain\n";
+        LOG_ERROR("Swapchain", "Failed to create swapchain");
         return false;
     }
 
-    std::vector<VkImage> images;
-    images.resize(image_count);
+    LOG_INFO("Swapchain", "Swapchain created");
+
+    std::vector<VkImage> images(image_count);
+
+    LOG_INFO("Swapchain", "Creating swapchain images");
 
     if (vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, images.data()) != VK_SUCCESS)
     {
-        std::cerr << "Failed to get swap chain images\n";
+        LOG_ERROR("Swapchain", "Failed to get swapchain images");
         return false;
     }
+
+    LOG_INFO("Swapchain", "Swapchain images created");
 
     m_present_images.resize(image_count);
 
@@ -119,12 +166,19 @@ bool SwapChain::create(VkPhysicalDevice gpu,
         m_present_images[i].image = images[i];
     }
 
-    create_image_views();
+    m_present_format = surface_format.format;
+    m_depth_format = find_depth_format(device.gpu());
+    m_extent = extent;
+
+    if (!create_image_views())
+    {
+        return false;
+    }
 
     return true;
 }
 
-void SwapChain::cleanup() noexcept
+void Swapchain::cleanup() noexcept
 {
     for (size_t i = 0; i < m_present_images.size(); ++i)
     {
@@ -140,11 +194,39 @@ void SwapChain::cleanup() noexcept
     }
 }
 
-VkSurfaceFormatKHR SwapChain::choose_swapchain_surface_format(const std::vector<VkSurfaceFormatKHR> &available_formats, VkFormat desired_format) noexcept
+VkFormat Swapchain::find_supported_format(VkPhysicalDevice gpu, const std::vector<VkFormat> &candidates, VkImageTiling tiling, VkFormatFeatureFlags feature_flag) noexcept
+{
+    for (VkFormat format : candidates)
+    {
+        VkFormatProperties format_properties;
+        vkGetPhysicalDeviceFormatProperties(gpu, format, &format_properties);
+
+        if (tiling == VK_IMAGE_TILING_OPTIMAL && (format_properties.optimalTilingFeatures & feature_flag) == feature_flag)
+        {
+            return format;
+        }
+    }
+
+    return VK_FORMAT_UNDEFINED;
+}
+
+VkFormat Swapchain::find_depth_format(VkPhysicalDevice gpu) noexcept
+{
+    return find_supported_format(gpu, 
+                                 {
+                                    VK_FORMAT_D32_SFLOAT,
+                                    VK_FORMAT_D32_SFLOAT_S8_UINT,
+                                    VK_FORMAT_D24_UNORM_S8_UINT
+                                 }, 
+                                 VK_IMAGE_TILING_OPTIMAL, 
+                                 VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+}
+
+VkSurfaceFormatKHR Swapchain::choose_swapchain_surface_format(const std::vector<VkSurfaceFormatKHR> &available_formats, VkFormat desired_format) noexcept
 {
     for (const auto &available_format : available_formats)
     {
-        if (available_format.format == desired_format)
+        if (available_format.format == desired_format && available_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
         {
             return available_format;
         }
@@ -153,7 +235,7 @@ VkSurfaceFormatKHR SwapChain::choose_swapchain_surface_format(const std::vector<
     return available_formats[0];
 }
 
-VkPresentModeKHR SwapChain::choose_swapchain_present_mode(const std::vector<VkPresentModeKHR> &available_modes, VkPresentModeKHR desired_mode) noexcept
+VkPresentModeKHR Swapchain::choose_swapchain_present_mode(const std::vector<VkPresentModeKHR> &available_modes, VkPresentModeKHR desired_mode) noexcept
 {
     for (const auto &avaiable_mode : available_modes)
     {
@@ -166,7 +248,7 @@ VkPresentModeKHR SwapChain::choose_swapchain_present_mode(const std::vector<VkPr
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkExtent2D SwapChain::choose_swapchain_extent(VkSurfaceCapabilitiesKHR capabilities, VkExtent2D actual_extent) noexcept
+VkExtent2D Swapchain::choose_swapchain_extent(VkSurfaceCapabilitiesKHR capabilities, VkExtent2D actual_extent) noexcept
 {
     if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
     {
@@ -184,8 +266,30 @@ VkExtent2D SwapChain::choose_swapchain_extent(VkSurfaceCapabilitiesKHR capabilit
     return actual_extent;
 }
 
-bool SwapChain::create_image_views() noexcept
+VkSwapchainKHR Swapchain::swapchain() const noexcept
 {
+    return m_swapchain;
+}
+
+VkExtent2D Swapchain::extent() const noexcept
+{
+    return m_extent;
+}
+
+VkFormat Swapchain::present_format() const noexcept
+{
+    return m_present_format;
+}
+
+VkFormat Swapchain::depth_format() const noexcept
+{
+    return m_depth_format;
+}
+
+bool Swapchain::create_image_views() noexcept
+{
+    LOG_INFO("Swapchain", "Creating swapchain image views");
+
     for (size_t i = 0; i < m_present_images.size(); ++i)
     {
         VkImageViewCreateInfo create_info{};
@@ -205,11 +309,11 @@ bool SwapChain::create_image_views() noexcept
 
         if (vkCreateImageView(m_device, &create_info, nullptr, &m_present_images[i].image_view) != VK_SUCCESS)
         {
-            std::cerr << "Failed to create image view\n";
+            LOG_ERROR("Swapchain", "Failed to create swapchain image view");
 
             for (size_t j = 0; j < i; ++j)
             {
-                vkDestroyImageView(m_device, m_present_images[i].image_view, nullptr);
+                vkDestroyImageView(m_device, m_present_images[j].image_view, nullptr);
             }
 
             return false;
@@ -217,6 +321,119 @@ bool SwapChain::create_image_views() noexcept
     }
 
     return true; 
+}
+
+bool Swapchain::create_framebuffers(VkRenderPass render_pass) noexcept
+{
+    m_framebuffers.resize(m_present_images.size());
+
+    for (size_t i = 0; i < m_framebuffers.size(); ++i)
+    {
+        // Attachments here
+
+        VkFramebufferCreateInfo framebuffer_info{};
+        framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_info.renderPass = render_pass;
+        framebuffer_info.attachmentCount = 1;
+
+        // TODO: Complete this shit
+
+    }
+
+    return true;
+}
+
+bool Swapchain::create_image(VkPhysicalDevice gpu,
+                             uint32_t width,
+                             uint32_t height,
+                             VkFormat format,
+                             VkImageTiling tiling,
+                             VkImageUsageFlags usage_flags,
+                             VkMemoryPropertyFlags property_flags,
+                             VkImage &image,
+                             VkDeviceMemory &image_memory) noexcept
+{
+    VkImageCreateInfo image_info{};
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.extent.width = width;
+    image_info.extent.height = height;
+    image_info.extent.depth = 1;
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.format = format;
+    image_info.tiling = tiling;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    image_info.usage = usage_flags;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateImage(m_device, &image_info, nullptr, &image) != VK_SUCCESS)
+    {
+        std::cerr << "Failed to create image\n";
+        return false;
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetImageMemoryRequirements(m_device, image, &memory_requirements);
+
+    VkMemoryAllocateInfo alloc_info{};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = memory_requirements.size;
+    alloc_info.memoryTypeIndex = find_memory_type(gpu, memory_requirements.memoryTypeBits, property_flags);
+
+    if (alloc_info.memoryTypeIndex == UINT32_MAX)
+    {
+        std::cerr << "No suitable memory type found\n";
+        return false;
+    }
+
+    if (vkAllocateMemory(m_device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS)
+    {
+        std::cerr << "Failed to allocate image memory\n";
+        return false;
+    }
+    
+    vkBindImageMemory(m_device, image, image_memory, 0);
+
+    return true;
+}
+
+bool Swapchain::create_depth_resources(VkPhysicalDevice gpu) noexcept
+{
+    VkImage depth_image = VK_NULL_HANDLE;
+
+    if (!create_image(gpu,
+                      m_extent.width, 
+                      m_extent.height, 
+                      m_depth_format, 
+                      VK_IMAGE_TILING_OPTIMAL,
+                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                      depth_image,
+                      m_depth_memory))
+    {
+        return false;
+    }
+
+    VkImageAspectFlags aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT;
+
+    if (m_depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT || m_depth_format == VK_FORMAT_D24_UNORM_S8_UINT)
+    {
+        aspect_flags |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+
+    m_depth_image_view = create_image_view(m_device, 
+                                           depth_image, 
+                                           m_depth_format, 
+                                           aspect_flags);
+
+    if (m_depth_image_view == VK_NULL_HANDLE)
+    {
+        std::cerr << "Failed to create depth resources\n";
+        return false;
+    }
+
+    return true;
 }
 } // namespace graphics
 } // namespace niqqa

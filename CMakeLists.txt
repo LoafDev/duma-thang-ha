@@ -18,9 +18,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_library(engine STATIC
     src/core/windows/window.cpp
     src/graphics/device.cpp
-    src/graphics/swap_chain.cpp
+    src/graphics/swapchain.cpp
     src/systems/engine.cpp
-    src/systems/renderer.cpp
+    src/systems/renderers/renderer.cpp
 )
 
 target_include_directories(engine

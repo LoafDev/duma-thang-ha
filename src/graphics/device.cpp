@@ -1,12 +1,13 @@
 #include <graphics/device.hpp>
+
 #include <graphics/swapchain.hpp>
 #include <systems/engine.hpp>
+#include <log.hpp>
 
 #include <map>
 #include <set>
 #include <string>
 #include <cstring>
-#include <iostream>
 
 namespace niqqa
 {
@@ -57,6 +58,24 @@ QueueFamilyIndices find_queue_families(VkPhysicalDevice device, VkSurfaceKHR sur
     return indices;
 }
 
+static bool check_device_extension_support(VkPhysicalDevice device, const std::vector<const char *> &extensions) noexcept
+{
+    uint32_t extension_count;
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr);
+
+    std::vector<VkExtensionProperties> available_extensions(extension_count);
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, available_extensions.data());
+
+    std::set<std::string> required_extensions(extensions.begin(), extensions.end());
+
+    for (const auto &extension : available_extensions)
+    {
+        required_extensions.erase(extension.extensionName);
+    }
+
+    return required_extensions.empty();
+}
+
 bool Device::init(VkInstance instance, VkSurfaceKHR surface) noexcept
 {
     m_instance = instance;
@@ -82,19 +101,102 @@ void Device::cleanup() noexcept
     }
 }
 
+VkPhysicalDevice Device::gpu() const noexcept
+{
+    return m_gpu;
+}
+
+VkDevice Device::device() const noexcept
+{
+    return m_device;
+}
+
+uint32_t Device::graphics_queue_family() const noexcept
+{
+    return m_graphics_family;
+}
+
+uint32_t Device::present_queue_family() const noexcept
+{
+    return m_present_family;
+}
+
+VkPhysicalDeviceProperties Device::properties() const noexcept
+{
+    return m_properties;
+}
+
+int32_t Device::rate_device_suitability(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept
+{
+    QueueFamilyIndices indices = find_queue_families(device, surface);
+    
+    if (!indices.is_complete())
+    {
+        return 0;
+    }
+
+    if (!check_device_extension_support(device, {REQUIRED_EXTS.begin(), REQUIRED_EXTS.end()}))
+    {
+        return 0;
+    }
+
+    if (surface != VK_NULL_HANDLE)
+    {
+        SwapchainSupportDetails swapchain_support = query_swapchain_support(device, surface);
+
+        if (swapchain_support.formats.empty() || swapchain_support.present_modes.empty())
+        {
+            return 0;
+        }
+    }
+
+    VkPhysicalDeviceProperties device_properties{};
+    VkPhysicalDeviceFeatures device_features{};
+
+    vkGetPhysicalDeviceProperties(device, &device_properties);
+    vkGetPhysicalDeviceFeatures(device, &device_features);
+
+    int32_t score = 0;
+
+    if (device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+    {
+        score += 1000;
+    }
+
+    score += device_properties.limits.maxImageDimension2D;
+
+    if (check_device_extension_support(device, {OPTIONAL_EXTS.begin(), OPTIONAL_EXTS.end()}))
+    {
+        score += 200;
+    }
+
+    if (check_device_extension_support(device, {RT_EXTS.begin(), RT_EXTS.end()}))
+    {
+        score += 2000;
+    }
+
+    return score;
+}
+
 bool Device::pick_physical_device(VkSurfaceKHR surface) noexcept
 {
     uint32_t device_count = 0;
     vkEnumeratePhysicalDevices(m_instance, &device_count, nullptr);
 
+    LOG_INFO("Device", "Finding GPUs with Vulkan support");
+
     if (device_count == 0)
     {
-        std::cerr << "Failed to find GPUs with Vulkan support\n";
+        LOG_ERROR("Device", "Failed to find GPUs with Vulkan support");
         return false;
     }
 
+    LOG_INFO("Device", "Found GPUs with Vulkan support");
+
     std::vector<VkPhysicalDevice> devices(device_count);
     vkEnumeratePhysicalDevices(m_instance, &device_count, devices.data());
+
+    LOG_INFO("Device", "Finding a suitable GPU");
 
     std::multimap<int32_t, VkPhysicalDevice> candidates;
 
@@ -110,9 +212,11 @@ bool Device::pick_physical_device(VkSurfaceKHR surface) noexcept
     }
     else 
     {
-        std::cerr << "Failed to find a suitable GPU\n";
+        LOG_ERROR("Device", "Failed to find a suitable GPU");
         return false;
     }
+
+    LOG_INFO("Device", "Found a suitable GPU");
 
     vkGetPhysicalDeviceProperties(m_gpu, &m_properties);
     vkGetPhysicalDeviceFeatures(m_gpu, &m_features);
@@ -123,8 +227,12 @@ bool Device::pick_physical_device(VkSurfaceKHR surface) noexcept
 bool Device::create_logical_device(VkSurfaceKHR surface) noexcept
 {
     QueueFamilyIndices queue_families = find_queue_families(m_gpu, surface);
+
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
     std::set<uint32_t> unique_queue_families;
+
+    m_graphics_family = queue_families.graphics_family.value();
+    m_present_family = queue_families.present_family.value();
 
     if (surface != VK_NULL_HANDLE)
     {
@@ -269,11 +377,15 @@ bool Device::create_logical_device(VkSurfaceKHR surface) noexcept
         create_info.enabledLayerCount = 0;
     }
 
+    LOG_INFO("Device", "Creating logical device");
+
     if (vkCreateDevice(m_gpu, &create_info, nullptr, &m_device) != VK_SUCCESS)
     {
-        std::cerr << "Failed to create logical device\n";
+        LOG_ERROR("Device", "Failed to create logical device");
         return false;
     }
+
+    LOG_INFO("Device", "Device created");
 
     vkGetDeviceQueue(m_device, queue_families.graphics_family.value(), 0, &m_graphics_queue);
 
@@ -283,76 +395,6 @@ bool Device::create_logical_device(VkSurfaceKHR surface) noexcept
     }
 
     return true;
-}
-
-int32_t Device::rate_device_suitability(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept
-{
-    QueueFamilyIndices indices = find_queue_families(device, surface);
-    
-    if (!indices.is_complete())
-    {
-        return 0;
-    }
-
-    if (!check_device_extension_support(device, {REQUIRED_EXTS.begin(), REQUIRED_EXTS.end()}))
-    {
-        return 0;
-    }
-
-    if (surface != VK_NULL_HANDLE)
-    {
-        SwapchainSupportDetails swapchain_support = query_swapchain_support(device, surface);
-
-        if (swapchain_support.formats.empty() || swapchain_support.present_modes.empty())
-        {
-            return 0;
-        }
-    }
-
-    VkPhysicalDeviceProperties device_properties{};
-    VkPhysicalDeviceFeatures device_features{};
-
-    vkGetPhysicalDeviceProperties(device, &device_properties);
-    vkGetPhysicalDeviceFeatures(device, &device_features);
-
-    int32_t score = 0;
-
-    if (device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-    {
-        score += 1000;
-    }
-
-    score += device_properties.limits.maxImageDimension2D;
-
-    if (check_device_extension_support(device, {OPTIONAL_EXTS.begin(), OPTIONAL_EXTS.end()}))
-    {
-        score += 200;
-    }
-
-    if (check_device_extension_support(device, {RT_EXTS.begin(), RT_EXTS.end()}))
-    {
-        score += 2000;
-    }
-
-    return score;
-}
-
-bool Device::check_device_extension_support(VkPhysicalDevice device, const std::vector<const char *> &extensions) noexcept
-{
-    uint32_t extension_count;
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr);
-
-    std::vector<VkExtensionProperties> available_extensions(extension_count);
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, available_extensions.data());
-
-    std::set<std::string> required_extensions(extensions.begin(), extensions.end());
-
-    for (const auto &extension : available_extensions)
-    {
-        required_extensions.erase(extension.extensionName);
-    }
-
-    return required_extensions.empty();
 }
 
 bool Device::is_device_extension_supported(const std::string &extension_name) noexcept

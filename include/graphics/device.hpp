@@ -28,6 +28,14 @@ public:
     bool init(VkInstance instance, VkSurfaceKHR surface) noexcept;
     void cleanup() noexcept;
 
+    VkPhysicalDevice gpu() const noexcept;
+    VkDevice device() const noexcept;
+    
+    uint32_t graphics_queue_family() const noexcept;
+    uint32_t present_queue_family() const noexcept;
+
+    VkPhysicalDeviceProperties properties() const noexcept;
+
 private:
     VkInstance m_instance{VK_NULL_HANDLE};
     VkDevice m_device{VK_NULL_HANDLE};
@@ -37,6 +45,9 @@ private:
 
     VkPhysicalDeviceProperties m_properties;
     VkPhysicalDeviceFeatures m_features;
+
+    uint32_t m_graphics_family{UINT32_MAX};
+    uint32_t m_present_family{UINT32_MAX};
 
     const std::vector<const char *> m_validation_layers = {
         "VK_LAYER_KHRONOS_validation"
@@ -63,12 +74,10 @@ private:
     static constexpr bool enable_validation_layers = true;
 #endif
 
-    bool pick_physical_device(VkSurfaceKHR surface) noexcept;
-    bool create_logical_device(VkSurfaceKHR surface) noexcept;
-
     int32_t rate_device_suitability(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept;
 
-    bool check_device_extension_support(VkPhysicalDevice device, const std::vector<const char *> &extensions) noexcept;
+    bool pick_physical_device(VkSurfaceKHR surface) noexcept;
+    bool create_logical_device(VkSurfaceKHR surface) noexcept;
     bool is_device_extension_supported(const std::string &extension_name) noexcept;
 };
 } // namespace graphics

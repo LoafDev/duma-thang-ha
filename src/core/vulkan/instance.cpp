@@ -1,11 +1,12 @@
-#include <vulkan/vulkan_core.h>
+#include <core/vulkan/instance.hpp>
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include <core/vulkan/instance.hpp>
 #include <systems/engine.hpp>
+#include <log.hpp>
+
 #include <cstdint>
-#include <iostream>
 
 namespace niqqa
 {
@@ -40,11 +41,15 @@ bool Instance::init() noexcept
         create_info.enabledLayerCount = 0;
     }
 
+    LOG_INFO("Instance", "Creating instance");
+
     if (vkCreateInstance(&create_info, nullptr, &m_instance) != VK_SUCCESS)
     {
-        std::cerr << "Failed to create instance\n";
+        LOG_ERROR("Instance", "Failed to create instance");
         return false;
     }
+
+    LOG_INFO("Instance", "Instance created");
 
     return true;
 }

@@ -1,7 +1,6 @@
 #include <core/windows/window.hpp>
 
-#include <iostream>
-#include <vulkan/vulkan_core.h>
+#include <log.hpp>
 
 namespace niqqa
 {
@@ -14,13 +13,15 @@ bool Window::should_close() noexcept
 
 bool Window::create_surface(VkInstance instance, VkSurfaceKHR &surface) noexcept
 {
+    LOG_INFO("Surface", "Creating surface");
 
     if (!glfwCreateWindowSurface(instance, m_window, nullptr, &surface))
     {
-        std::cerr << "Failed to create window surface\n";
-
+        LOG_ERROR("Surface", "Failed to create surface");
         return false;
     }
+
+    LOG_INFO("Surface", "Surface created");
 
     return true;
 }
@@ -40,14 +41,15 @@ void Window::cleanup() noexcept
 
 bool Window::init(uint32_t width, uint32_t height, const std::string &title, bool resizable, bool fullscreen) noexcept
 {
+    LOG_INFO("GLFW", "Initializing GLFW");
+
     if (!glfwInit())
     {
-        const char *desc = nullptr;
-        glfwGetError(&desc);
-
-        std::cerr << "Failed to initialize GLFW: " << (desc ? desc : "unknown") << "\n";
+        LOG_ERROR("GLFW", "Failed to initialize GLFW");
         return false;
     }
+
+    LOG_INFO("GLFW", "GLFW initialized");
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, m_resizable);
@@ -58,14 +60,15 @@ bool Window::init(uint32_t width, uint32_t height, const std::string &title, boo
                                 nullptr, 
                                 nullptr);
 
+    LOG_INFO("Window", "Creating window");
+
     if (!m_window)
     {
-        const char *desc = nullptr;
-        glfwGetError(&desc);
-
-        std::cerr << "Failed to create GLFW window: " << (desc ? desc : "unknown") << "\n";
+        LOG_ERROR("Window", "Failed to create window");
         return false;
     }
+
+    LOG_INFO("Window", "Window created");
 
     return true;
 }
