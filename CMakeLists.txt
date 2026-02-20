@@ -17,10 +17,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # =====================
 add_library(engine STATIC
     src/core/windows/window.cpp
+    src/core/vulkan/instance.cpp
+
     src/graphics/device.cpp
     src/graphics/swapchain.cpp
+    src/graphics/command_pool.cpp
+    src/graphics/frame.cpp
+    src/graphics/render_pass.cpp
+
     src/systems/engine.cpp
-    src/systems/renderers/renderer.cpp
+    src/systems/renderers/forward.cpp
 )
 
 target_include_directories(engine
